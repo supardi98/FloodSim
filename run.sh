@@ -31,9 +31,10 @@ while true; do
             $PROGRAM_TO_RUN data/dtm.tif $VALUE
             echo "Simulasi selesai"
             echo "Mulai Tiling"
-            gdal_translate -of VRT -ot Byte -scale "result/result.tif" result/result.vrt
+            gdal_translate -of VRT -ot Byte -scale 0 3 "result/result.tif" result/result.vrt
+            gdaldem color-relief result/result.vrt colormap/jet.clr result/output.tif -alpha
             rm -rf result/tiles
-            gdal2tiles.py -z 12-17 result/result.vrt result/tiles
+            gdal2tiles.py -z 12-17 --resampling=bilinear --tile-format=PNG result/output.tif result/tiles
             echo "Selesai"
             sleep "$COOLDOWN_SECONDS"
         else

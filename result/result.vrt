@@ -17,8 +17,8 @@
       <SrcRect xOff="0" yOff="0" xSize="2301" ySize="2057" />
       <DstRect xOff="0" yOff="0" xSize="2301" ySize="2057" />
       <NODATA>-32767</NODATA>
-      <ScaleOffset>1.5785e-06</ScaleOffset>
-      <ScaleRatio>52.9658</ScaleRatio>
+      <ScaleOffset>0</ScaleOffset>
+      <ScaleRatio>85.333</ScaleRatio>
     </ComplexSource>
   </VRTRasterBand>
 </VRTDataset>

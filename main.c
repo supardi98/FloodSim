@@ -85,7 +85,6 @@ int main(int argc, const char *argv[])
     // 5. convert ke air/pixel
 
     float gsd = 0.5;
-    // gsd = 8.2884099563;
     float curah_hujan = arg2 / 100; // m
     float waterPerPixel = curah_hujan;
 
