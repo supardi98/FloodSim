@@ -4,13 +4,7 @@
 #include <errno.h>
 #include <math.h>
 #include <stdlib.h>
-// typedef struct Node
-// {
-//     acc float64
-//         index int
-//             Next[] int
-// }
-extern void run_idw_cuda(float *input, float *output, int width, int height, float noData);
+
 int WriteTiff(GDALDatasetH hDataset, float *pixelArray, int nXSize, int nYSize, char *output);
 float KernelOps(float *kernel);
 int main(int argc, const char *argv[])
@@ -92,8 +86,8 @@ int main(int argc, const char *argv[])
 
     float gsd = 0.5;
     // gsd = 8.2884099563;
-    float curah_hujan = 0.05; // m
-    float waterPerPixel = curah_hujan * pow(gsd, 2);
+    float curah_hujan = arg2 / 100; // m
+    float waterPerPixel = curah_hujan;
 
     // Alokasi array air
     float *waterArray = (float *)CPLMalloc(nXSize * nYSize * sizeof(float));
@@ -105,31 +99,29 @@ int main(int argc, const char *argv[])
         GDALClose(hDataset);
         return 1;
     }
+
     // Inisialisasi curah hujan ke semua pixel
-    printf("Inisialiasi curah hujan");
-    for (int y = 0; y < nYSize; y++)
-    {
-        for (int x = 0; x < nXSize; x++)
-        {
-            int idx = y * nXSize + x;
-            if (!isnan(pixelArray[idx]) && pixelArray[idx] != noDataValue)
-            {
-                waterArray[idx] = waterPerPixel;
-            }
-        }
-    }
+    printf("Inisialiasi curah hujan\n");
 
     // Simulasi aliran air
-    int iter = 50;
-    int dx[9] = {-1, 1, 0, 0, -1, 1, -1, 1, 0};
-    int dy[9] = {0, 0, -1, 1, -1, -1, 1, 1, 0};
-    for (int epoch = 0; epoch < 4; epoch++)
+    int iter = 20;
+    int hours = 30;
+    int dx[4] = {-1, 1, 0, 0};
+    int dy[4] = {0, 0, -1, 1};
+    for (int epoch = 0; epoch < hours; epoch++)
     {
+        for (int i = 0; i < nYSize * nXSize; i++)
+        {
+            if (!isnan(pixelArray[i]) && pixelArray[i] != noDataValue)
+            {
+                waterArray[i] += (waterPerPixel / hours);
+            }
+        }
         /* code */
-        printf("Epoch : %d", epoch);
+        printf("Epoch : %d\n", epoch);
         for (int it = 0; it < iter; it++)
         {
-            printf("Iter : %d\n", it);
+            // printf("Iter : %d\n", it);
             memcpy(tempWaterArray, waterArray, sizeof(float) * nXSize * nYSize);
 
             for (int y = 1; y < nYSize - 1; y++)
@@ -147,10 +139,10 @@ int main(int argc, const char *argv[])
 
                     float elev = pixelArray[idx] + waterArray[idx];
                     float totalFlow = 0;
-                    float flows[8] = {0};
+                    float flows[4] = {0};
 
                     // Hitung aliran ke tetangga
-                    for (int d = 0; d < 8; d++)
+                    for (int d = 0; d < 4; d++)
                     {
                         int nx = x + dx[d];
                         int ny = y + dy[d];
@@ -174,34 +166,62 @@ int main(int argc, const char *argv[])
                             int nx = x + dx[d];
                             int ny = y + dy[d];
                             int nIdx = ny * nXSize + nx;
-                            float flowAmount = (flows[d] / totalFlow) * waterArray[idx] * 0.5; // 0.5 = distribusi sebagian
+                            float flowAmount = (flows[d] / totalFlow) * waterArray[idx]; // 0.5 = distribusi sebagian
                             tempWaterArray[idx] -= flowAmount;
                             tempWaterArray[nIdx] += flowAmount;
                         }
                     }
                 }
             }
-
             // Swap array
             memcpy(waterArray, tempWaterArray, sizeof(float) * nXSize * nYSize);
         }
-        for (int y = 0; y < nYSize; y++)
+    }
+    float *res = (float *)CPLMalloc(nXSize * nYSize * sizeof(float));
+    for (int y = 1; y < nYSize - 1; y++)
+    {
+        for (int x = 0; x < nXSize - 1; x++)
         {
-            for (int x = 0; x < nXSize; x++)
+            int idx = y * nXSize + x;
+            if (x < 0 || y < 0 || x >= nXSize || y >= nYSize)
             {
-                int idx = y * nXSize + x;
-                if (!isnan(pixelArray[idx]) && pixelArray[idx] != noDataValue)
+                continue;
+            };
+
+            if (isnan(pixelArray[idx]) || pixelArray[idx] == noDataValue)
+                continue;
+
+            float val = 0;
+            float count = 0;
+            for (int d = 0; d < 4; d++)
+            {
+                int nx = x + dx[d];
+                int ny = y + dy[d];
+                int nIdx = ny * nXSize + nx;
+                if (isnan(pixelArray[nIdx]) || pixelArray[nIdx] == noDataValue)
+                    break;
+                if (waterArray[idx] <= waterArray[nIdx])
                 {
-                    waterArray[idx] += waterPerPixel;
+                    count++;
+                    val += waterArray[nIdx];
                 }
+            }
+            if (count > 0)
+            {
+                res[idx] = val / count;
+            }
+            else
+            {
+                res[idx] = waterArray[idx];
             }
         }
     }
+
     printf("Hasil akhir \n");
     CPLFree(tempWaterArray);
-    WriteTiff(hDataset, waterArray, nXSize, nYSize, "hasil per epok2.tif");
     CPLFree(waterArray);
-
+    WriteTiff(hDataset, res, nXSize, nYSize, "result/result.tif");
+    CPLFree(res);
     GDALClose(hDataset);
     return 0;
 }
