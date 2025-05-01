@@ -26,7 +26,7 @@ while true; do
     if [[ "$VALUE" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
         echo "Retrieved value: $VALUE"
 
-        if (( $(echo "$VALUE >= 0" | bc -l) )); then
+        if (( $(echo "$VALUE >= 50" | bc -l) )); then
             echo "Mulai simulasi dengan curah hujan $VALUE mm"
             $PROGRAM_TO_RUN data/dtm.tif $VALUE
             echo "Simulasi selesai"
