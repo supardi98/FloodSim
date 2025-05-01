@@ -1,5 +1,5 @@
 # FloodSim
-Program untuk melakukan simulasi banjir akibat hujan menggunakan DTM
+Program untuk melakukan simulasi banjir akibat hujan menggunakan DTM<br>
 Sementara hanya bisa dijalankan di Enviroment Linux
 
 ## Install Dependencies
@@ -27,6 +27,7 @@ Untuk jalankan program otomatisasi
 ```
 ./run.sh
 ```
+{Program masih dalam tahap pengembagan}<br>
 
 
 
