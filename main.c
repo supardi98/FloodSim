@@ -9,14 +9,15 @@ int WriteTiff(GDALDatasetH hDataset, float *pixelArray, int nXSize, int nYSize, 
 float KernelOps(float *kernel);
 int main(int argc, const char *argv[])
 {
-    if (argc != 3)
-    {
-        fprintf(stderr, "Usage: %s <input_raster_file>\n", argv[0]);
-        return EINVAL;
-    }
+    // if (argc != 4)
+    // {
+    //     fprintf(stderr, "Usage: %s <input_raster_file>\n", argv[0]);
+    //     return EINVAL;
+    // }
 
     const char *pszFilename = argv[1];
-    const float arg2 = atof(argv[2]);
+    const char *pszFilename2 = argv[2];
+    const float arg2 = atof(argv[3]);
     printf("%f", arg2);
 
     // Initialize GDAL
@@ -30,6 +31,14 @@ int main(int argc, const char *argv[])
     }
     // Get the first band
     GDALRasterBandH hBand = GDALGetRasterBand(hDataset, 1);
+
+    GDALDatasetH ds2 = GDALOpen(pszFilename2, GA_ReadOnly);
+    if (!ds2)
+    {
+        fprintf(stderr, "Gagal buka %s\n", pszFilename2);
+        return 1;
+    }
+    GDALRasterBandH band2 = GDALGetRasterBand(ds2, 1);
 
     GDALSetRasterNoDataValue(hBand, -32767);
     if (!hBand)
@@ -59,6 +68,14 @@ int main(int argc, const char *argv[])
         return 1;
     }
 
+    int *lahan = (int *)CPLMalloc(nXSize * nYSize * sizeof(int));
+    if (!lahan)
+    {
+        fprintf(stderr, "Error: Memory allocation failed\n");
+        GDALClose(ds2);
+        return 1;
+    }
+
     // Read the entire band into the array
     if (GDALRasterIO(hBand, GF_Read,
                      0, 0,             // Start at top-left corner (x=0, y=0)
@@ -73,6 +90,19 @@ int main(int argc, const char *argv[])
         GDALClose(hDataset);
         return 1;
     }
+    if (GDALRasterIO(band2, GF_Read,
+                     0, 0,             // Start at top-left corner (x=0, y=0)
+                     nXSize, nYSize,   // Read full raster
+                     lahan,            // Buffer to store data
+                     nXSize, nYSize,   // Buffer dimensions (same as raster)
+                     GDT_Int32,        // Data type (adjust if needed)
+                     0, 0) != CE_None) // Pixel/line spacing
+    {
+        fprintf(stderr, "Error: Could not read raster data\n");
+        CPLFree(lahan);
+        GDALClose(ds2);
+        return 1;
+    }
     int hasNoData = 0;
     double noDataValue = GDALGetRasterNoDataValue(hBand, &hasNoData);
     // 1. hitung nilai tentangga
@@ -85,7 +115,7 @@ int main(int argc, const char *argv[])
     // 5. convert ke air/pixel
 
     float gsd = 0.5;
-    float curah_hujan = arg2 / 100; // m
+    float curah_hujan = arg2 / 1000; // mm -> m
     float waterPerPixel = curah_hujan;
 
     // Alokasi array air
@@ -104,9 +134,15 @@ int main(int argc, const char *argv[])
 
     // Simulasi aliran air
     int iter = 20;
-    int hours = 30;
-    int dx[4] = {-1, 1, 0, 0};
-    int dy[4] = {0, 0, -1, 1};
+    int hours = 10;
+    // Nilai Infiltrasi
+    // 1 : lahan terbangun
+    // 2 : air
+    // 3 : agri
+    float infil[4] = {0.0, 10, 2, 30};
+    int dx[8] = {-1, 1, 0, 0, -1, -1, 1, 1};
+    int dy[8] = {0, 0, -1, 1, -1, 1, -1, 1};
+    int n = 4;
     for (int epoch = 0; epoch < hours; epoch++)
     {
         for (int i = 0; i < nYSize * nXSize; i++)
@@ -141,7 +177,7 @@ int main(int argc, const char *argv[])
                     float flows[4] = {0};
 
                     // Hitung aliran ke tetangga
-                    for (int d = 0; d < 4; d++)
+                    for (int d = 0; d < n; d++)
                     {
                         int nx = x + dx[d];
                         int ny = y + dy[d];
@@ -160,18 +196,28 @@ int main(int argc, const char *argv[])
 
                     if (totalFlow > 0)
                     {
-                        for (int d = 0; d < 4; d++)
+                        for (int d = 0; d < n; d++)
                         {
                             int nx = x + dx[d];
                             int ny = y + dy[d];
                             int nIdx = ny * nXSize + nx;
+
                             float flowAmount = (flows[d] / totalFlow) * waterArray[idx]; // 0.5 = distribusi sebagian
+                            // float flowAmount = (flows[d] / totalFlow) * waterArray[idx];
                             tempWaterArray[idx] -= flowAmount;
                             tempWaterArray[nIdx] += flowAmount;
                         }
                     }
+                    float valueLahan[n];
+                    int kelas = (int)lahan[idx]; // aman jika nilainya 0, 1, 2
+                    float val = infil[kelas];
+                    if (tempWaterArray[idx] >= (val / 1000 / hours))
+                    {
+                        tempWaterArray[idx] -= (val / 1000 / hours);
+                    }
                 }
             }
+            // printf("wtf is hapendingp"); // sorry lagi aneh ini kodenya
             // Swap array
             memcpy(waterArray, tempWaterArray, sizeof(float) * nXSize * nYSize);
         }
@@ -192,7 +238,7 @@ int main(int argc, const char *argv[])
 
             float val = 0;
             float count = 0;
-            for (int d = 0; d < 4; d++)
+            for (int d = 0; d < n; d++)
             {
                 int nx = x + dx[d];
                 int ny = y + dy[d];
@@ -242,6 +288,7 @@ int WriteTiff(GDALDatasetH hDataset, float *pixelArray, int nXSize, int nYSize, 
     // Step 5: Write modified data to the new file
     GDALRasterBandH outputBand = GDALGetRasterBand(outputDataset, 1);
     GDALSetRasterNoDataValue(outputBand, -32767);
+    // GDALSetRasterNoDataValue(outputBand, 0);
     if (GDALRasterIO(outputBand, GF_Write, 0, 0, nXSize, nYSize, pixelArray, nXSize, nYSize, GDT_Float32, 0, 0))
     {
         CPLFree(pixelArray);

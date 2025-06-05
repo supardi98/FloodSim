@@ -1,2 +1,2 @@
 gcc main.c -o main $(gdal-config --cflags) $(gdal-config --libs) -lm
-time ./main data/dtm.tif 0.2
+time ./main data/data_2.tif data/lahan.tif 50
