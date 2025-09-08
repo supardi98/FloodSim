@@ -17,10 +17,11 @@ while true; do
     echo "$(date): Checking value from API..."
 
     # Get JSON from API
-    RESPONSE=$(curl -s "$API_URL")
+    # RESPONSE=$(curl -s "$API_URL")
 
     # Extract 'value' using jq
-    VALUE=$(echo "$RESPONSE" | jq -r '.current.rain')
+    # VALUE=$(echo "$RESPONSE" | jq -r '.current.rain')
+    VALUE=250
 
     # Check if VALUE is numeric
     if [[ "$VALUE" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
@@ -29,13 +30,14 @@ while true; do
         if (( $(echo "$VALUE >= 50" | bc -l) )); then
             echo "Mulai simulasi dengan curah hujan $VALUE mm"
             cp asli.tif data/asli.tif
-            $PROGRAM_TO_RUN data/dem.tif data/lahan.tif result/result.tif  $VALUE 0 0 0 0 0 0
+            $PROGRAM_TO_RUN data/dem.tif data/lahan.tif result/result.tif  $VALUE -7.5200680748355 112.70477092805535 -7.520508553989 112.70464135101226 4000 0.5 5
             echo "Simulasi selesai"
             echo "Mulai Tiling"
             gdal_translate -of VRT -ot Byte -scale 0 3 "result/result.tif" result/result.vrt
             gdaldem color-relief result/result.vrt colormap/jet.clr result/output.tif -alpha
             rm -rf result/tiles
-            gdal2tiles.py -z 12-17 --resampling=bilinear --tile-format=PNG result/output.tif result/tiles
+            # gdal2tiles.py -z 12-17 --resampling=bilinear --tile-format=PNG result/output.tif result/tiles
+            gdal2tiles.py -z 12-17 --resampling=bilinear --xyz result/output.tif result/tiles
             echo "Selesai"
             sleep "$COOLDOWN_SECONDS"
         else

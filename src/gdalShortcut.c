@@ -50,13 +50,30 @@ Raster OpenTiff(char *filename, int type, int noDataVal)
 
     result.nXSize = GDALGetRasterBandXSize(result.band);
     result.nYSize = GDALGetRasterBandYSize(result.band);
-    if (noDataVal != NULL)
+
+    // Set NoData jika ada
+    if (noDataVal != NULL)  // pakai sentinel supaya tidak konflik pointer
     {
         GDALSetRasterNoDataValue(result.band, noDataVal);
     }
 
     printf("Raster size: %d cols x %d rows\n", result.nXSize, result.nYSize);
 
+    // Ambil GeoTransform untuk resolusi DEM
+    double gt[6];
+    if (GDALGetGeoTransform(result.dataset, gt) == CE_None)
+    {
+        double resX = gt[1];
+        double resY = fabs(gt[5]);
+        double scale = (resX + resY) / 2.0;
+        printf("# DEM resolution: %.2f meter/pixel\n", scale);
+    }
+    else
+    {
+        printf("Warning: GeoTransform not available, resolution unknown.\n");
+    }
+
+    // Load raster sesuai type
     if (type == 0)
     {
         result.pixelArray = CPLMalloc(result.nXSize * result.nYSize * sizeof(float));
