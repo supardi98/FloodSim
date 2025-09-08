@@ -28,7 +28,8 @@ while true; do
 
         if (( $(echo "$VALUE >= 50" | bc -l) )); then
             echo "Mulai simulasi dengan curah hujan $VALUE mm"
-            $PROGRAM_TO_RUN data/dem.tif $VALUE
+            cp asli.tif data/asli.tif
+            $PROGRAM_TO_RUN data/dem.tif data/lahan.tif result/result.tif  $VALUE 0 0 0 0 0 0
             echo "Simulasi selesai"
             echo "Mulai Tiling"
             gdal_translate -of VRT -ot Byte -scale 0 3 "result/result.tif" result/result.vrt

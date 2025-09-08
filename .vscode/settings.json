@@ -1,0 +1,8 @@
+{
+    "files.associations": {
+        "": "",
+        "stdlib.h": "c",
+        "gdalshortcut.h": "c",
+        "smoothing.h": "c"
+    }
+}
