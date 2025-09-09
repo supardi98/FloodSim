@@ -39,8 +39,8 @@ app.post("/simulate", (req, res) => {
     }
 
     // Validasi pumps
-    if (!Array.isArray(pumps) || pumps.length === 0) {
-        return res.status(400).json({ status: "error", message: "pumps must be a non-empty array" });
+    if (!Array.isArray(pumps)) {
+        return res.status(400).json({ status: "error", message: "pumps must be an array" });
     }
 
     for (let i = 0; i < pumps.length; i++) {
@@ -61,8 +61,25 @@ app.post("/simulate", (req, res) => {
     const interval_min = rain_timeseries.map(r => r.interval).join(",");
     const iter = rain_timeseries.map(r => r.iter).join(",");
 
-    // Ambil pump pertama (bisa dikembangkan untuk multiple pump)
-    const pump = pumps[0];
+    // Safety pump set to 0 is no pump
+    let pump_in_lat = 0;
+    let pump_in_lon = 0;
+    let pump_out_lat = 0;
+    let pump_out_lon = 0;
+    let pump_capacity = 0;
+    let pump_threshold = 0;
+    let pump_radius = undefined;
+    // Konversi pumps ke format string lama
+    if (pumps.length > 0) {
+        pump_in_lat = pumps.map(p => p.in_lat).join(",");
+        pump_in_lon = pumps.map(p => p.in_lon).join(",");
+        pump_out_lat = pumps.map(p => p.out_lat).join(",");
+        pump_out_lon = pumps.map(p => p.out_lon).join(",");
+        pump_capacity = pumps.map(p => p.capacity).join(",");
+        pump_threshold = pumps.map(p => p.threshold).join(",");
+        pump_radius = pumps.map(p => p.radius).join(",");
+    }
+
     const args = [
         "data/dem.tif",
         "data/lahan.tif",
@@ -72,15 +89,17 @@ app.post("/simulate", (req, res) => {
         rain_mm,
         interval_min,
         iter,
-        pump.in_lat,
-        pump.in_lon,
-        pump.out_lat,
-        pump.out_lon,
-        pump.capacity,
-        pump.threshold
+        pump_in_lat,
+        pump_in_lon,
+        pump_out_lat,
+        pump_out_lon,
+        pump_capacity,
+        pump_threshold
     ];
 
-    if (pump.radius) args.push(pump.radius);
+    if (pump_radius) {
+        args.push(pump_radius);
+    }
 
     execFile("./run.sh", args, { cwd: process.cwd() }, (error, stdout, stderr) => {
         // Kalau error exit code
