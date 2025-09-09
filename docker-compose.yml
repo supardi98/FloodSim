@@ -5,7 +5,5 @@ services:
     # ports:
     # - "4000:4000"
     volumes:
-      - ./data:/app/data
       - ./result:/app/result
-      - ./colormap:/app/colormap
     restart: unless-stopped
