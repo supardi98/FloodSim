@@ -181,14 +181,19 @@ int main(int argc, const char *argv[]) {
     return 1;
   }
   for (int i = 0; i < nPumps; i++) {
-    int px = -1, py = -1, ox = -1, oy = -1;
-    LatLonToPixel(dem.dataset, inLat[i], inLon[i], &px, &py);
-    LatLonToPixel(dem.dataset, outLat[i], outLon[i], &ox, &oy);
     // set all coords to -1 initially (safety)
     pumps[i].px = -1;
     pumps[i].py = -1;
     pumps[i].ox = -1;
     pumps[i].oy = -1;
+
+    // if lat == 0, then we will skip it
+    if (inLat[i] == 0 && outLat[i] == 0 && inLon[i] == 0 && outLon[i] == 0) {
+      continue;
+    }
+    int px = -1, py = -1, ox = -1, oy = -1;
+    LatLonToPixel(dem.dataset, inLat[i], inLon[i], &px, &py);
+    LatLonToPixel(dem.dataset, outLat[i], outLon[i], &ox, &oy);
     if (px < 0 || px >= nXSize || py < 0 || py >= nYSize || ox < 0 ||
         ox >= nXSize || oy < 0 || oy >= nYSize) {
       fprintf(
@@ -340,7 +345,7 @@ int main(int argc, const char *argv[]) {
       for (int pid = 0; pid < nPumps; pid++) {
         Pump *p = &pumps[pid];
         if (p->px < 0 || p->py < 0 || p->ox < 0 || p->oy < 0)
-          continue; // invalid pump
+          continue; // skip invalid pump
 
         int pidx = p->py * nXSize + p->px;
         int oidx = p->oy * nXSize + p->ox;
