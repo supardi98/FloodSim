@@ -1,8 +1,26 @@
 import express from "express";
 import { execFile } from "child_process";
 import path from "path";
+import cors from "cors";
 
 const app = express();
+
+const corsOptions = {
+    origin: function (origin, callback) {
+        if (process.env.NODE_ENV != "production") {
+            return callback(null, true);
+        }
+        const regex = /^https?:\/\/([a-zA-Z0-9-]+\.)*prodev\.media$/;
+
+        if (!origin || regex.test(origin)) {
+            callback(null, true);
+        } else {
+            callback(new Error("Not allowed by CORS"));
+        }
+    },
+    credentials: true,
+};
+app.use(cors(corsOptions));
 app.use(express.json());
 
 // Public folders
