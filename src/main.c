@@ -49,20 +49,22 @@ int parseFloatArray(const char *str, float **out, int *n) {
 int main(int argc, const char *argv[]) {
   float infil_capacity_mm_per_hr[4] = {0.0f, 10.0f, 5.0f, 30.0f};
 
-  if (argc < 13) {
-    fprintf(stderr,
-            "Usage: %s <dem.tif> <landuse.tif> <output.tif> "
-            "<rain_mm1,mm2,...> <interval_min1,interval_min2,...> "
-            "<iter1,iter2,...> <pumpInLat,...> <pumpInLon,...> "
-            "<pumpOutLat,...> <pumpOutLon,...> <pumpCapacity_m3_per_hr,...> "
-            "<pumpThreshold_m,...> [<pumpRadius_m,...>]\n",
-            argv[0]);
+  if (argc < 14) {
+    fprintf(
+        stderr,
+        "Usage: %s <dem.tif> <landuse.tif> <output.tif> <output_pump_log.csv> "
+        "<rain_mm1,mm2,...> <interval_min1,interval_min2,...> "
+        "<iter1,iter2,...> <pumpInLat,...> <pumpInLon,...> "
+        "<pumpOutLat,...> <pumpOutLon,...> <pumpCapacity_m3_per_hr,...> "
+        "<pumpThreshold_m,...> [<pumpRadius_m,...>]\n",
+        argv[0]);
     return 1;
   }
 
   const char *demFile = argv[1];
   const char *lahanFile = argv[2];
   const char *output = argv[3];
+  const char *pumpLogFile = argv[4];
 
   // parse rainfall time-series arrays
   float *rain_mm_array = NULL;
@@ -70,33 +72,33 @@ int main(int argc, const char *argv[]) {
   float *rain_iter_f_array = NULL;
   int nRain1 = 0, nRain2 = 0, nRain3 = 0;
 
-  if (parseFloatArray(argv[4], &rain_mm_array, &nRain1) != 0) {
-    fprintf(stderr, "Failed parse rain_mm array\n");
+  if (parseFloatArray(argv[5], &rain_mm_array, &nRain1) != 0) {
+    fprintf(stderr, "Failed: parse rain_mm array\n");
     return 1;
   }
-  if (parseFloatArray(argv[5], &rain_interval_min_array, &nRain2) != 0) {
-    fprintf(stderr, "Failed parse rain_interval_min array\n");
+  if (parseFloatArray(argv[6], &rain_interval_min_array, &nRain2) != 0) {
+    fprintf(stderr, "Failed: parse rain_interval_min array\n");
     return 1;
   }
-  if (parseFloatArray(argv[6], &rain_iter_f_array, &nRain3) != 0) {
-    fprintf(stderr, "Failed parse rain_iter array\n");
+  if (parseFloatArray(argv[7], &rain_iter_f_array, &nRain3) != 0) {
+    fprintf(stderr, "Failed: parse rain_iter array\n");
     return 1;
   }
 
   if (!(nRain1 == nRain2 && nRain1 == nRain3)) {
-    fprintf(stderr, "Rain arrays must have same length\n");
+    fprintf(stderr, "Failed: Rain arrays must have same length\n");
     return 1;
   }
   int nSteps = nRain1;
 
-  // pump args start at argv[7]...
+  // pump args start at argv[8]...
   float *inLat = NULL, *inLon = NULL, *outLat = NULL, *outLon = NULL;
   float *capacities = NULL, *thresholds = NULL, *radii = NULL;
   int nPumps1 = 0, nPumps2 = 0, nPumps3 = 0, nPumps4 = 0, nPumps5 = 0,
       nPumps6 = 0, nPumps7 = 0;
-  int pumpArgBase = 7;
+  int pumpArgBase = 8;
   if (argc <= pumpArgBase + 4) {
-    fprintf(stderr, "Not enough pump args\n");
+    fprintf(stderr, "Failed: Not enough pump args\n");
     return 1;
   }
 
@@ -135,7 +137,7 @@ int main(int argc, const char *argv[]) {
 
   if (!(nPumps1 == nPumps2 && nPumps1 == nPumps3 && nPumps1 == nPumps4 &&
         nPumps1 == nPumps5 && nPumps1 == nPumps6 && nPumps1 == nPumps7)) {
-    fprintf(stderr, "All pump arrays must have same length\n");
+    fprintf(stderr, "Failed: All pump arrays must have same length\n");
     return 1;
   }
 
@@ -143,14 +145,14 @@ int main(int argc, const char *argv[]) {
 
   Raster dem = OpenTiff((char *)demFile, 0, -32767);
   if (!dem.dataset) {
-    fprintf(stderr, "Failed to open DEM: %s\n", demFile);
+    fprintf(stderr, "Failed: to open DEM: %s\n", demFile);
     return 1;
   }
   float *elevArray = (float *)dem.pixelArray;
 
   Raster lahanData = OpenTiff((char *)lahanFile, 1, -1);
   if (!lahanData.dataset) {
-    fprintf(stderr, "Failed to open landuse: %s\n", lahanFile);
+    fprintf(stderr, "Failed: to open landuse: %s\n", lahanFile);
     GDALClose(dem.dataset);
     return 1;
   }
@@ -159,7 +161,7 @@ int main(int argc, const char *argv[]) {
   int nXSize = dem.nXSize;
   int nYSize = dem.nYSize;
   if (nXSize <= 0 || nYSize <= 0) {
-    fprintf(stderr, "Invalid raster size\n");
+    fprintf(stderr, "Failed: Invalid raster size\n");
     GDALClose(dem.dataset);
     GDALClose(lahanData.dataset);
     return 1;
@@ -175,7 +177,7 @@ int main(int argc, const char *argv[]) {
   // allocate pumps
   Pump *pumps = (Pump *)calloc((size_t)nPumps, sizeof(Pump));
   if (!pumps) {
-    fprintf(stderr, "Failed to alloc pumps\n");
+    fprintf(stderr, "Failed: to alloc pumps\n");
     return 1;
   }
   for (int i = 0; i < nPumps; i++) {
@@ -189,11 +191,12 @@ int main(int argc, const char *argv[]) {
     pumps[i].oy = -1;
     if (px < 0 || px >= nXSize || py < 0 || py >= nYSize || ox < 0 ||
         ox >= nXSize || oy < 0 || oy >= nYSize) {
-      fprintf(stderr,
-              "Pump %d outside DEM bounds, ignored (in:%f,%f,out:%f,%f -> "
-              "px=%d,py=%d,ox=%d,oy=%d)\n",
-              i, inLat[i], inLon[i], outLat[i], outLon[i], px, py, ox, oy);
-      continue;
+      fprintf(
+          stderr,
+          "Failed: Pump %d outside DEM bounds, ignored (in:%f,%f,out:%f,%f -> "
+          "px=%d,py=%d,ox=%d,oy=%d)\n",
+          i, inLat[i], inLon[i], outLat[i], outLon[i], px, py, ox, oy);
+      return 1;
     }
     pumps[i].inLat = inLat[i];
     pumps[i].inLon = inLon[i];
@@ -216,7 +219,7 @@ int main(int argc, const char *argv[]) {
   float *water = (float *)CPLCalloc(npix, sizeof(float));
   float *tmp = (float *)CPLCalloc(npix, sizeof(float));
   if (!water || !tmp) {
-    fprintf(stderr, "Memory allocation failed\n");
+    fprintf(stderr, "Failed: Memory allocation failed\n");
     CPLFree(water);
     CPLFree(tmp);
     GDALClose(dem.dataset);
@@ -224,9 +227,9 @@ int main(int argc, const char *argv[]) {
     return 1;
   }
 
-  FILE *pumpLog = fopen("pump_log.csv", "w");
+  FILE *pumpLog = fopen(pumpLogFile, "w");
   if (!pumpLog) {
-    perror("Failed to open pump_log.csv");
+    perror("Failed: to open pump_log.csv");
     CPLFree(water);
     CPLFree(tmp);
     GDALClose(dem.dataset);
@@ -420,7 +423,7 @@ int main(int argc, const char *argv[]) {
   // smoothing & write
   float *res = (float *)CPLMalloc(sizeof(float) * npix);
   if (!res) {
-    fprintf(stderr, "Failed alloc res\n");
+    fprintf(stderr, "Failed: alloc res\n");
   } else {
     Smoothing(nYSize, nXSize, dx, dy, nDirs, elevArray, water, res,
               noDataValue);
