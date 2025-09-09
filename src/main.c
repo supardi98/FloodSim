@@ -9,47 +9,90 @@
 #include <stdlib.h>
 #include <string.h>
 
+typedef struct {
+  int px, py;
+  int ox, oy;
+  float capacity_m3hr;
+  float threshold;
+  int radius_px;
+  int state;
+  int cooldown;
+} Pump;
+
+int parseFloatArray(const char *str, float **out, int *n) {
+  char *s = strdup(str);
+  int count = 0;
+  for (char *p = s; *p; p++)
+    if (*p == ',')
+      count++;
+  *n = count + 1;
+  *out = (float *)malloc(sizeof(float) * (*n));
+  int i = 0;
+  char *token = strtok(s, ",");
+  while (token) {
+    (*out)[i++] = atof(token);
+    token = strtok(NULL, ",");
+  }
+  free(s);
+  return 0;
+}
+
 int main(int argc, const char *argv[]) {
   if (argc < 11) {
-    fprintf(stderr,
-            "Usage: %s <dem.tif> <landuse.tif> <output.tif> "
-            "<curah_hujan_mm_total> <pumpInLat> <pumpInLon> <pumpOutLat> "
-            "<pumpOutLon> <pumpCapacity_m3_per_hr> <pumpThreshold_m> "
-            "<pumpRadius_m>\n",
-            argv[0]);
+    fprintf(
+        stderr,
+        "Usage: %s <dem.tif> <landuse.tif> <output.tif> <curah_hujan_mm_total> "
+        "<pumpInLat,...> <pumpInLon,...> <pumpOutLat,...> <pumpOutLon,...> "
+        "<pumpCapacity_m3_per_hr,...> <pumpThreshold_m,...> "
+        "<pumpRadius_m,...>\n",
+        argv[0]);
     return 1;
   }
 
-  const char *pszFilename = argv[1];
-  const char *pszFilename2 = argv[2];
+  const char *demFile = argv[1];
+  const char *lahanFile = argv[2];
   const char *output = argv[3];
-  float rainfall_total_mm = (float)atof(argv[4]);
-  double pumpInLat = atof(argv[5]);
-  double pumpInLon = atof(argv[6]);
-  double pumpOutLat = atof(argv[7]);
-  double pumpOutLon = atof(argv[8]);
-  double pumpCapacity_m3_per_hr = atof(argv[9]);
-  double pumpThres = atof(argv[10]);
-  float pump_radius_m = (argc >= 12) ? atof(argv[11]) : 2.0f; // default 2 m
+  float rainfall_total_mm = atof(argv[4]);
 
-  int pump_radius_px = (int)ceil(pump_radius_m / gsd);
-  if (pump_radius_px < 1)
-    pump_radius_px = 1;
+  float *inLat, *inLon, *outLat, *outLon, *capacities, *thresholds, *radii;
+  int nPumps1, nPumps2, nPumps3, nPumps4, nPumps5, nPumps6, nPumps7;
 
-  printf("Pump radius: %.2f m → %d pixels\n", pump_radius_m, pump_radius_px);
+  parseFloatArray(argv[5], &inLat, &nPumps1);
+  parseFloatArray(argv[6], &inLon, &nPumps2);
+  parseFloatArray(argv[7], &outLat, &nPumps3);
+  parseFloatArray(argv[8], &outLon, &nPumps4);
+  parseFloatArray(argv[9], &capacities, &nPumps5);
+  parseFloatArray(argv[10], &thresholds, &nPumps6);
+
+  int nPumps = nPumps1; // asumsi semua array sama panjang
+  if (argc >= 12) {
+    parseFloatArray(argv[11], &radii, &nPumps7);
+  } else {
+    nPumps7 = nPumps1; // set agar validasi tidak error
+    radii = (float *)malloc(sizeof(float) * nPumps);
+    for (int i = 0; i < nPumps; i++)
+      radii[i] = 2.0f; // default 2 m
+  }
+
+  // Validasi semua array sama panjang
+  if (nPumps1 != nPumps2 || nPumps1 != nPumps3 || nPumps1 != nPumps4 ||
+      nPumps1 != nPumps5 || nPumps1 != nPumps6 || nPumps1 != nPumps7) {
+    fprintf(stderr, "All pump arrays must have same length\n");
+    return 1;
+  }
 
   GDALAllRegister();
 
-  Raster dem = OpenTiff(pszFilename, 0, -32767);
+  Raster dem = OpenTiff(demFile, 0, -32767);
   if (!dem.dataset) {
-    fprintf(stderr, "Failed to open DEM: %s\n", pszFilename);
+    fprintf(stderr, "Failed to open DEM: %s\n", demFile);
     return 1;
   }
   float *elevArray = (float *)dem.pixelArray;
 
-  Raster lahanData = OpenTiff(pszFilename2, 1, NULL);
+  Raster lahanData = OpenTiff(lahanFile, 1, NULL);
   if (!lahanData.dataset) {
-    fprintf(stderr, "Failed to open landuse: %s\n", pszFilename2);
+    fprintf(stderr, "Failed to open landuse: %s\n", lahanFile);
     GDALClose(dem.dataset);
     return 1;
   }
@@ -72,6 +115,30 @@ int main(int argc, const char *argv[]) {
   float gsd = 0.5f;
   float pixelArea = gsd * gsd;
 
+  Pump *pumps = (Pump *)malloc(sizeof(Pump) * nPumps);
+  for (int i = 0; i < nPumps; i++) {
+    int px, py, ox, oy;
+    LatLonToPixel(dem.dataset, inLat[i], inLon[i], &px, &py);
+    LatLonToPixel(dem.dataset, outLat[i], outLon[i], &ox, &oy);
+    if (px < 0 || px >= nXSize || py < 0 || py >= nYSize || ox < 0 ||
+        ox >= nXSize || oy < 0 || oy >= nYSize) {
+      fprintf(stderr, "Pump %d outside DEM bounds, ignored\n", i);
+      pumps[i].px = -1;
+      continue;
+    }
+    pumps[i].px = px;
+    pumps[i].py = py;
+    pumps[i].ox = ox;
+    pumps[i].oy = oy;
+    pumps[i].capacity_m3hr = capacities[i];
+    pumps[i].threshold = thresholds[i];
+    pumps[i].radius_px = (int)ceil(radii[i] / gsd);
+    if (pumps[i].radius_px < 1)
+      pumps[i].radius_px = 1;
+    pumps[i].state = 0;
+    pumps[i].cooldown = 0;
+  }
+
   float *hyeto = (float *)malloc(sizeof(float) * hours);
   for (int i = 0; i < hours; i++) {
     hyeto[i] = rainfall_total_mm / (float)hours;
@@ -91,38 +158,6 @@ int main(int argc, const char *argv[]) {
     return 1;
   }
 
-  int pumpLocX[3] = {548, 602, -1};
-  int pumpLocY[3] = {718, 612, -1};
-  int outLocX[3] = {528, 613, -1};
-  int outLocY[3] = {713, 614, -1};
-
-  float pumpThreshold[3] = {0.6f, 0.87f, (float)pumpThres};
-  float pumpCapacity_m3hr[3] = {75.0f / 1000.0f, 80.0f / 1000.0f,
-                                (float)pumpCapacity_m3_per_hr};
-
-  int pumpState[3] = {0, 0, 0};
-  int pumpCooldown[3] = {0, 0, 0};
-  const int pumpCooldownEpochs = 1;
-  const float pumpHysteresisFrac = 0.1f;
-
-  if (pumpInLat != 0.0 && pumpInLon != 0.0 && pumpOutLat != 0.0 &&
-      pumpOutLon != 0.0) {
-    int px, py, ox, oy;
-    LatLonToPixel(dem.dataset, pumpInLat, pumpInLon, &px, &py);
-    LatLonToPixel(dem.dataset, pumpOutLat, pumpOutLon, &ox, &oy);
-    if (px >= 0 && px < nXSize && py >= 0 && py < nYSize) {
-      pumpLocX[2] = px;
-      pumpLocY[2] = py;
-      outLocX[2] = ox;
-      outLocY[2] = oy;
-      pumpCapacity_m3hr[2] = (float)pumpCapacity_m3_per_hr;
-      pumpThreshold[2] = (float)pumpThres;
-    } else {
-      fprintf(stderr,
-              "Provided pump lat/lon outside DEM bounds, ignoring pump 3\n");
-    }
-  }
-
   FILE *pumpLog = fopen("pump_log.csv", "w");
   if (!pumpLog) {
     perror("Failed to open pump_log.csv");
@@ -135,10 +170,14 @@ int main(int argc, const char *argv[]) {
   int dy[4] = {0, 0, -1, 1};
   int nDirs = 4;
 
+  const int pumpCooldownEpochs = 1;
+  const float pumpHysteresisFrac = 0.1f;
+
   for (int epoch = 0; epoch < hours; epoch++) {
     float rain_mm = hyeto[epoch];
     float rain_m = rain_mm / 1000.0f;
 
+    // tambahkan hujan ke semua pixel
     for (size_t i = 0; i < npix; i++) {
       if (hasNoData && elevArray[i] == (float)noDataValue)
         continue;
@@ -153,6 +192,7 @@ int main(int argc, const char *argv[]) {
     for (int it = 0; it < iter; it++) {
       memcpy(tmp, water, sizeof(float) * npix);
 
+      // water flow + infiltration
       for (int y = 1; y < nYSize - 1; y++) {
         for (int x = 1; x < nXSize - 1; x++) {
           int idx = y * nXSize + x;
@@ -165,6 +205,7 @@ int main(int argc, const char *argv[]) {
           float total = 0.0f;
           float pot[4] = {0, 0, 0, 0};
 
+          // alirkan ke 4 arah
           for (int d = 0; d < nDirs; d++) {
             int nx = x + dx[d];
             int ny = y + dy[d];
@@ -173,6 +214,7 @@ int main(int argc, const char *argv[]) {
               continue;
             if (isnan(elevArray[nidx]))
               continue;
+
             float zn = elevArray[nidx] + water[nidx];
             float diff = z - zn;
             if (diff > 0.0f) {
@@ -194,97 +236,81 @@ int main(int argc, const char *argv[]) {
             }
           }
 
+          // infiltrasi
           int kelas = lahan[idx];
           if (kelas < 0 || kelas > 3)
             kelas = 0;
           float infil_mmhr = infil_capacity_mm_per_hr[kelas] * decayFactor;
           float infil_m = infil_mmhr / 1000.0f;
-          if (tmp[idx] >= infil_m)
-            tmp[idx] -= infil_m;
-          else
-            tmp[idx] = 0.0f;
+          tmp[idx] = fmaxf(0.0f, tmp[idx] - infil_m);
         }
       }
 
       memcpy(water, tmp, sizeof(float) * npix);
 
-      for (int pid = 0; pid < 3; pid++) {
-        int px = pumpLocX[pid], py = pumpLocY[pid];
-        int ox = outLocX[pid], oy = outLocY[pid];
-        if (px < 0 || py < 0 || ox < 0 || oy < 0)
-          continue;
-        if (px >= nXSize || py >= nYSize || ox >= nXSize || oy >= nYSize)
-          continue;
+      // loop pompa dinamis
+      for (int pid = 0; pid < nPumps; pid++) {
+        Pump *p = &pumps[pid];
+        if (p->px < 0)
+          continue; // pompa tidak valid
+        int pidx = p->py * nXSize + p->px;
+        int oidx = p->oy * nXSize + p->ox;
 
-        int pidx = py * nXSize + px;
-        int oidx = oy * nXSize + ox;
-
-        float thresh_on = pumpThreshold[pid];
-        float thresh_off =
-            pumpThreshold[pid] - pumpHysteresisFrac * pumpThreshold[pid];
+        float thresh_on = p->threshold;
+        float thresh_off = p->threshold * (1.0f - pumpHysteresisFrac);
         if (thresh_off < 0.0f)
           thresh_off = 0.0f;
 
-        if (pumpCooldown[pid] > 0)
-          pumpCooldown[pid]--;
+        if (p->cooldown > 0)
+          p->cooldown--;
 
-        if (!pumpState[pid]) {
-          if (water[pidx] > thresh_on && pumpCooldown[pid] == 0) {
-            pumpState[pid] = 1;
-            pumpCooldown[pid] = pumpCooldownEpochs * iter;
+        if (!p->state) {
+          if (water[pidx] > thresh_on && p->cooldown == 0) {
+            p->state = 1;
+            p->cooldown = pumpCooldownEpochs * iter;
           }
         } else {
-          if (water[pidx] < thresh_off && pumpCooldown[pid] == 0) {
-            pumpState[pid] = 0;
-            pumpCooldown[pid] = pumpCooldownEpochs * iter;
+          if (water[pidx] < thresh_off && p->cooldown == 0) {
+            p->state = 0;
+            p->cooldown = pumpCooldownEpochs * iter;
           }
         }
 
         float pumped_this_iter = 0.0f;
-        if (pumpState[pid]) {
-          float dt_hours = 1.0f / (float)iter;
-          float pumpVolume_m3_per_iter = pumpCapacity_m3hr[pid] * dt_hours;
-          float pumped_depth_m_per_iter = pumpVolume_m3_per_iter / pixelArea;
 
-          // hitung pixel dalam radius
+        if (p->state) {
+          // hitung jumlah pixel dalam radius
           int countPix = 0;
-          for (int dyR = -pump_radius; dyR <= pump_radius; dyR++) {
-            for (int dxR = -pump_radius; dxR <= pump_radius; dxR++) {
-              int nx = px + dxR;
-              int ny = py + dyR;
+          for (int dyR = -p->radius_px; dyR <= p->radius_px; dyR++) {
+            for (int dxR = -p->radius_px; dxR <= p->radius_px; dxR++) {
+              int nx = p->px + dxR;
+              int ny = p->py + dyR;
               if (nx < 0 || ny < 0 || nx >= nXSize || ny >= nYSize)
                 continue;
-              if (dxR * dxR + dyR * dyR > pump_radius * pump_radius)
-                continue; // lingkaran
+              if (dxR * dxR + dyR * dyR > p->radius_px * p->radius_px)
+                continue;
               countPix++;
             }
           }
 
-          float pumped_this_iter = 0.0f;
-          if (pumpState[pid] && countPix > 0) {
+          if (countPix > 0) {
             float dt_hours = 1.0f / (float)iter;
-            float pumpVolume_m3_per_iter = pumpCapacity_m3hr[pid] * dt_hours;
-            float pumped_depth_m_per_iter =
-                pumpVolume_m3_per_iter / (pixelArea * countPix);
+            float pumpVolIter = p->capacity_m3hr * dt_hours;
+            float pumped_depth_m = pumpVolIter / (pixelArea * countPix);
 
-            for (int dy_r = -pump_radius_px; dy_r <= pump_radius_px; dy_r++) {
-              for (int dx_r = -pump_radius_px; dx_r <= pump_radius_px; dx_r++) {
-                int nx = px + dx_r;
-                int ny = py + dy_r;
-                if (nx < 0 || nx >= nXSize || ny < 0 || ny >= nYSize)
+            for (int dyR = -p->radius_px; dyR <= p->radius_px; dyR++) {
+              for (int dxR = -p->radius_px; dxR <= p->radius_px; dxR++) {
+                int nx = p->px + dxR;
+                int ny = p->py + dyR;
+                if (nx < 0 || ny < 0 || nx >= nXSize || ny >= nYSize)
                   continue;
-
-                // optional: circular radius
-                if (dx_r * dx_r + dy_r * dy_r > pump_radius_px * pump_radius_px)
+                if (dxR * dxR + dyR * dyR > p->radius_px * p->radius_px)
                   continue;
 
                 int nidx = ny * nXSize + nx;
-                float remove = fminf(water[nidx], pumped_depth_m_per_iter);
+                float remove = fminf(water[nidx], pumped_depth_m);
                 water[nidx] -= remove;
-
-                // tambahkan volume ke titik out (sederhana: semua masuk ke out
-                // pixel)
-                water[oidx] += remove;
+                water[oidx] += remove; // masuk ke titik out
                 pumped_this_iter += remove;
               }
             }
@@ -292,11 +318,11 @@ int main(int argc, const char *argv[]) {
         }
 
         fprintf(pumpLog, "%d,%d,%d,%d,%d,%.6f,%.3f,%.3f,%.6f,%d\n", epoch, it,
-                pid, px, py, water[pidx], thresh_on, thresh_off,
-                pumped_this_iter, pumpState[pid]);
-      }
-    }
-  }
+                pid, p->px, p->py, water[pidx], thresh_on, thresh_off,
+                pumped_this_iter, p->state);
+      } // end pump loop
+    } // end iter loop
+  } // end epoch loop
 
   float *res = (float *)CPLMalloc(sizeof(float) * npix);
   Smoothing(nYSize, nXSize, dx, dy, nDirs, elevArray, water, res, noDataValue);
@@ -310,6 +336,14 @@ int main(int argc, const char *argv[]) {
   GDALClose(lahanData.dataset);
 
   fclose(pumpLog);
+  free(inLat);
+  free(inLon);
+  free(outLat);
+  free(outLon);
+  free(capacities);
+  free(thresholds);
+  free(radii);
+  free(pumps);
   free(hyeto);
   return 0;
 }
