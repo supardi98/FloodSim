@@ -2,8 +2,8 @@ services:
   rain-sim-api:
     build: .
     container_name: rain-sim-api
-    ports:
-      - "4000:4000"
+    # ports:
+    # - "4000:4000"
     volumes:
       - ./data:/app/data
       - ./result:/app/result
