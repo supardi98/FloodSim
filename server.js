@@ -19,7 +19,7 @@ app.post("/simulate", (req, res) => {
     const { output_tif, pump_log, tiles_dir, rain_timeseries, pumps } = req.body;
 
     // Validasi field wajib
-    if (!output_tif || !pump_log || !tiles_dir) {
+    if (!pump_log || !tiles_dir) {
         return res.status(400).json({ status: "error", message: "output_tif, pump_log, and tiles_dir are required" });
     }
 
@@ -83,7 +83,7 @@ app.post("/simulate", (req, res) => {
     const args = [
         "data/dem.tif",
         "data/lahan.tif",
-        output_tif,
+        output_tif || "result/delete_after_this.tif",
         pump_log,
         tiles_dir,
         rain_mm,
@@ -102,6 +102,11 @@ app.post("/simulate", (req, res) => {
     }
 
     execFile("./run.sh", args, { cwd: process.cwd() }, (error, stdout, stderr) => {
+        // delete tif if not set
+        if (!output_tif) {
+            execFile("rm", ["result/delete_after_this.tif"], { cwd: process.cwd() });
+        }
+
         // Kalau error exit code
 
         // Kalau ada 'Failed:' di stdout/stderr
