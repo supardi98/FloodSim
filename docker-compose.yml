@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   rain-sim-api:
     build: .
@@ -10,5 +8,4 @@ services:
       - ./data:/app/data
       - ./result:/app/result
       - ./colormap:/app/colormap
-      - ./run.sh:/app/run.sh
     restart: unless-stopped
