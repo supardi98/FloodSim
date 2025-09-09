@@ -1,320 +1,455 @@
-#include "gdal.h"
+// main.c (modified for time-series rainfall)
 #include "cpl_conv.h"
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <math.h>
+#include "gdal.h"
 #include "gdalShortcut.h"
 #include "smoothing.h"
 #include "transformation.h"
-int main(int argc, const char *argv[])
-{
-    // You need 9 arguments: program + 8 params
-    // printf("%d", argc);
-    // if (argc != 4 || argc > 9)
-    // {
-    //     fprintf(stderr, "Usage: %s <input_dem.tif> <input_landuse.tif> <output_sim.tif> <curah_hujan_mm> <lat_pump_in> <lon_pump_in> <lat_pump_out> <lon_pump_out>\n", argv[0]);
-    //     return EINVAL;
-    // }
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
-    const char *pszFilename = argv[1];  // DEM
-    const char *pszFilename2 = argv[2]; // Landuse
-    const char *output = argv[3];
-    const float arg2 = (float)atof(argv[4]); // Curah hujan in mm
-    double pumpInLat = atof(argv[5]);
-    double pumpInLon = atof(argv[6]);
-    double pumpOutLat = atof(argv[7]);
-    double pumpOutLon = atof(argv[8]);
-    double pumpCapacity = atof(argv[9]);
-    double pumpThres = atof(argv[10]);
+typedef struct {
+  double inLat, inLon, outLat, outLon;
+  int px, py;
+  int ox, oy;
+  float capacity_m3hr;
+  float threshold;
+  int radius_px;
+  int state;
+  int cooldown;
+} Pump;
 
-    // Initialize GDAL
-    GDALAllRegister();
+int parseFloatArray(const char *str, float **out, int *n) {
+  if (!str)
+    return -1;
+  char *s = strdup(str);
+  if (!s)
+    return -1;
+  int count = 0;
+  for (char *p = s; *p; p++)
+    if (*p == ',')
+      count++;
+  *n = count + 1;
+  *out = (float *)malloc(sizeof(float) * (*n));
+  if (!(*out)) {
+    free(s);
+    return -1;
+  }
+  int i = 0;
+  char *token = strtok(s, ",");
+  while (token && i < *n) {
+    (*out)[i++] = atof(token);
+    token = strtok(NULL, ",");
+  }
+  free(s);
+  return 0;
+}
 
-    // Open datasets (assumes OpenTiff returns a struct with dataset, band, nXSize, nYSize and pixelArray)
-    Raster dem = OpenTiff(pszFilename, 0, -32767);
-    if (!dem.dataset)
-    {
-        fprintf(stderr, "Failed to open DEM: %s\n", pszFilename);
-        return 1;
+int main(int argc, const char *argv[]) {
+  float infil_capacity_mm_per_hr[4] = {0.0f, 10.0f, 5.0f, 30.0f};
+
+  if (argc < 14) {
+    fprintf(
+        stderr,
+        "Usage: %s <dem.tif> <landuse.tif> <output.tif> <output_pump_log.csv> "
+        "<rain_mm1,mm2,...> <interval_min1,interval_min2,...> "
+        "<iter1,iter2,...> <pumpInLat,...> <pumpInLon,...> "
+        "<pumpOutLat,...> <pumpOutLon,...> <pumpCapacity_m3_per_hr,...> "
+        "<pumpThreshold_m,...> [<pumpRadius_m,...>]\n",
+        argv[0]);
+    return 1;
+  }
+
+  const char *demFile = argv[1];
+  const char *lahanFile = argv[2];
+  const char *output = argv[3];
+  const char *pumpLogFile = argv[4];
+
+  // parse rainfall time-series arrays
+  float *rain_mm_array = NULL;
+  float *rain_interval_min_array = NULL;
+  float *rain_iter_f_array = NULL;
+  int nRain1 = 0, nRain2 = 0, nRain3 = 0;
+
+  if (parseFloatArray(argv[5], &rain_mm_array, &nRain1) != 0) {
+    fprintf(stderr, "Failed: parse rain_mm array\n");
+    return 1;
+  }
+  if (parseFloatArray(argv[6], &rain_interval_min_array, &nRain2) != 0) {
+    fprintf(stderr, "Failed: parse rain_interval_min array\n");
+    return 1;
+  }
+  if (parseFloatArray(argv[7], &rain_iter_f_array, &nRain3) != 0) {
+    fprintf(stderr, "Failed: parse rain_iter array\n");
+    return 1;
+  }
+
+  if (!(nRain1 == nRain2 && nRain1 == nRain3)) {
+    fprintf(stderr, "Failed: Rain arrays must have same length\n");
+    return 1;
+  }
+  int nSteps = nRain1;
+
+  // pump args start at argv[8]...
+  float *inLat = NULL, *inLon = NULL, *outLat = NULL, *outLon = NULL;
+  float *capacities = NULL, *thresholds = NULL, *radii = NULL;
+  int nPumps1 = 0, nPumps2 = 0, nPumps3 = 0, nPumps4 = 0, nPumps5 = 0,
+      nPumps6 = 0, nPumps7 = 0;
+  int pumpArgBase = 8;
+  if (argc <= pumpArgBase + 4) {
+    fprintf(stderr, "Failed: Not enough pump args\n");
+    return 1;
+  }
+
+  // safe indexes
+  // argv[pumpArgBase + 0] = pumpInLat
+  // +1 = pumpInLon, +2 = pumpOutLat, +3 = pumpOutLon, +4 = capacities, +5 =
+  // thresholds, +6 optional radii
+  if (parseFloatArray(argv[pumpArgBase + 0], &inLat, &nPumps1) != 0)
+    return 1;
+  if (parseFloatArray(argv[pumpArgBase + 1], &inLon, &nPumps2) != 0)
+    return 1;
+  if (parseFloatArray(argv[pumpArgBase + 2], &outLat, &nPumps3) != 0)
+    return 1;
+  if (parseFloatArray(argv[pumpArgBase + 3], &outLon, &nPumps4) != 0)
+    return 1;
+  if (parseFloatArray(argv[pumpArgBase + 4], &capacities, &nPumps5) != 0)
+    return 1;
+  if (parseFloatArray(argv[pumpArgBase + 5], &thresholds, &nPumps6) != 0)
+    return 1;
+
+  int nPumps = nPumps1;
+  if (argc >= pumpArgBase + 7 && argv[pumpArgBase + 6]) {
+    if (parseFloatArray(argv[pumpArgBase + 6], &radii, &nPumps7) != 0) {
+      // fallback default
+      nPumps7 = nPumps;
+      radii = (float *)malloc(sizeof(float) * nPumps);
+      for (int i = 0; i < nPumps; i++)
+        radii[i] = 2.0f;
     }
-    float *pixelArray = (float *)dem.pixelArray;
+  } else {
+    nPumps7 = nPumps;
+    radii = (float *)malloc(sizeof(float) * nPumps);
+    for (int i = 0; i < nPumps; i++)
+      radii[i] = 2.0f;
+  }
 
-    Raster lahanData = OpenTiff(pszFilename2, 1, NULL);
-    if (!lahanData.dataset)
-    {
-        fprintf(stderr, "Failed to open landuse: %s\n", pszFilename2);
-        GDALClose(dem.dataset);
-        return 1;
-    }
-    int *lahan = (int *)lahanData.pixelArray;
+  if (!(nPumps1 == nPumps2 && nPumps1 == nPumps3 && nPumps1 == nPumps4 &&
+        nPumps1 == nPumps5 && nPumps1 == nPumps6 && nPumps1 == nPumps7)) {
+    fprintf(stderr, "Failed: All pump arrays must have same length\n");
+    return 1;
+  }
 
-    int nXSize = dem.nXSize;
-    int nYSize = dem.nYSize;
-    if (nXSize <= 0 || nYSize <= 0)
-    {
-        fprintf(stderr, "Invalid raster size\n");
-        GDALClose(dem.dataset);
-        GDALClose(lahanData.dataset);
-        return 1;
-    }
+  GDALAllRegister();
 
-    int hasNoData = 0;
-    double noDataValue = GDALGetRasterNoDataValue(dem.band, &hasNoData);
-    printf("hasNoData=%d\n", hasNoData);
+  Raster dem = OpenTiff((char *)demFile, 0, -32767);
+  if (!dem.dataset) {
+    fprintf(stderr, "Failed: to open DEM: %s\n", demFile);
+    return 1;
+  }
+  float *elevArray = (float *)dem.pixelArray;
 
-    float gsd = 0.5f;                     // meters per pixel (verify)
-    float curah_hujan_m = arg2 / 1000.0f; // mm -> m
-    float pixelArea = gsd * gsd;
-    // th per epoch will be curah_hujan_m / hours
+  Raster lahanData = OpenTiff((char *)lahanFile, 1, -1);
+  if (!lahanData.dataset) {
+    fprintf(stderr, "Failed: to open landuse: %s\n", lahanFile);
+    GDALClose(dem.dataset);
+    return 1;
+  }
+  int *lahan = (int *)lahanData.pixelArray;
 
-    // Allocate and zero arrays (use CPLCalloc to zero)
-    size_t npix = (size_t)nXSize * (size_t)nYSize;
-    float *waterArray = (float *)CPLCalloc(npix, sizeof(float));
-    float *tempWaterArray = (float *)CPLCalloc(npix, sizeof(float));
-    if (!waterArray || !tempWaterArray)
-    {
-        fprintf(stderr, "Memory allocation for water array failed\n");
-        if (waterArray)
-            CPLFree(waterArray);
-        if (tempWaterArray)
-            CPLFree(tempWaterArray);
-        GDALClose(dem.dataset);
-        GDALClose(lahanData.dataset);
-        return 1;
-    }
-
-    printf("Inisialisasi curah hujan\n");
-
-    int iter = 10;
-    int hours = 10;
-
-    float infil_mm_per_hr[4] = {0.0f, 10.0f, 5.0f, 30.0f};
-
-    // neighbor offsets: you only use first 4 directions (N,S,W,E)
-    int dx[8] = {-1, 1, 0, 0, -1, -1, 1, 1};
-    int dy[8] = {0, 0, -1, 1, -1, 1, -1, 1};
-    int n = 4;
-
-    // Simulation loop: add rainfall evenly over hours (stores depth in meters)
-    for (int epoch = 0; epoch < hours; epoch++)
-    {
-        // add rainfall depth for this epoch (m)
-        float addDepthPerEpoch = curah_hujan_m / (float)hours; // depth (m) per pixel
-
-        for (size_t i = 0; i < npix; i++)
-        {
-            // skip nodata/elevation NaN pixels
-            if (hasNoData && pixelArray[i] == (float)noDataValue)
-                continue;
-            if (isnan(pixelArray[i]))
-                continue;
-            waterArray[i] += addDepthPerEpoch;
-        }
-
-        printf("Epoch : %d\n", epoch);
-        for (int it = 0; it < iter; it++)
-        {
-            // copy current depths into temp for updates
-            memcpy(tempWaterArray, waterArray, sizeof(float) * npix);
-
-            for (int y = 1; y < nYSize - 1; y++)
-            {
-                for (int x = 1; x < nXSize - 1; x++)
-                {
-                    int idx = y * nXSize + x;
-
-                    if (hasNoData && pixelArray[idx] == (float)noDataValue)
-                        continue;
-                    if (isnan(pixelArray[idx]))
-                        continue;
-
-                    float elev = pixelArray[idx] + waterArray[idx];
-                    float totalFlow = 0.0f;
-                    float flows[4] = {0};
-
-                    // compute flow potential to 4 neighbors
-                    for (int d = 0; d < n; d++)
-                    {
-                        int nx = x + dx[d];
-                        int ny = y + dy[d];
-                        int nIdx = ny * nXSize + nx;
-
-                        if (hasNoData && pixelArray[nIdx] == (float)noDataValue)
-                            continue;
-                        if (isnan(pixelArray[nIdx]))
-                            continue;
-
-                        float neighElev = pixelArray[nIdx] + waterArray[nIdx];
-                        float diff = elev - neighElev;
-                        if (diff > 0.0f)
-                        {
-                            flows[d] = diff;
-                            totalFlow += diff;
-                        }
-                    }
-
-                    if (totalFlow > 0.0f)
-                    {
-                        for (int d = 0; d < n; d++)
-                        {
-                            int nx = x + dx[d];
-                            int ny = y + dy[d];
-                            int nIdx = ny * nXSize + nx;
-
-                            // distribute water depth proportionally (keeps units as depth m)
-                            float flowAmount = (flows[d] / totalFlow) * waterArray[idx];
-                            tempWaterArray[idx] -= flowAmount;
-                            tempWaterArray[nIdx] += flowAmount;
-                        }
-                    }
-
-                    // infiltration: infil_mm_per_hr is mm/hr -> convert to m per this epoch (hours steps)
-                    int kelas = lahan[idx];
-                    if (kelas < 0 || kelas > 3)
-                        kelas = 0;                                                               // safety clamp
-                    float infil_m_per_epoch = (infil_mm_per_hr[kelas] / 1000.0f) / (float)hours; // converting mm/hr to m per epoch (approx)
-                    if (tempWaterArray[idx] >= infil_m_per_epoch)
-                    {
-                        tempWaterArray[idx] -= infil_m_per_epoch;
-                    }
-                    else
-                    {
-                        tempWaterArray[idx] = 0.0f;
-                    }
-                }
-            }
-
-            // write back updated water depths
-            memcpy(waterArray, tempWaterArray, sizeof(float) * npix);
-        }
-    }
-
-    int pumpLocX[3] = {548, 602};
-    int pumpLocY[3] = {718, 612};
-    int outLocX[3] = {528, 613};
-    int outLocY[3] = {713, 614};
-    float pumpThreshold[3] = {0.6, 0.87};
-    float pumpPerHour_m[3] = {75.0f / 1000.0f, 80.0f / 1000.0f}; // example: 75 mm/hr -> m/hr (adjust if you meant m3/hr)
-    bool pumpState[3] = {false, false, false};
-    if (pumpInLat != 0)
-    {
-        LatLonToPixel(dem.dataset, pumpInLat, pumpInLon, &pumpLocX[2], &pumpLocY[2]);
-        LatLonToPixel(dem.dataset, pumpOutLat, pumpOutLon, &outLocX[2], &outLocY[2]);
-        pumpPerHour_m[2] = pumpCapacity / 1000.0f;
-        pumpThreshold[2] = pumpThres;
-    }
-
-    for (int idPump = 0; idPump < 2; idPump++)
-    {
-        int px = pumpLocX[idPump], py = pumpLocY[idPump];
-        int outx = outLocX[idPump], outy = outLocY[idPump];
-        if (px < 0 || px >= nXSize || py < 0 || py >= nYSize)
-            continue;
-        if (outx < 0 || outx >= nXSize || outy < 0 || outy >= nYSize)
-            continue;
-
-        int pidx = py * nXSize + px;
-        int oidx = outy * nXSize + outx;
-
-        if (waterArray[pidx] > 0.6f && !pumpState[idPump])
-        {
-
-            waterArray[pidx] = 0.0f;
-
-            waterArray[oidx] += pumpPerHour_m[idPump];
-            pumpState[idPump] = true;
-        }
-    }
-
-    // Continue flow relaxation after pumps
-    for (int it = 0; it < iter * 5; it++)
-    {
-        memcpy(tempWaterArray, waterArray, sizeof(float) * npix);
-
-        for (int y = 1; y < nYSize - 1; y++)
-        {
-            for (int x = 1; x < nXSize - 1; x++)
-            {
-                int idx = y * nXSize + x;
-
-                if (hasNoData && pixelArray[idx] == (float)noDataValue)
-                    continue;
-                if (isnan(pixelArray[idx]))
-                    continue;
-
-                float elev = pixelArray[idx] + waterArray[idx];
-                float totalFlow = 0.0f;
-                float flows[4] = {0};
-
-                for (int d = 0; d < n; d++)
-                {
-                    int nx = x + dx[d];
-                    int ny = y + dy[d];
-                    int nIdx = ny * nXSize + nx;
-                    if (hasNoData && pixelArray[nIdx] == (float)noDataValue)
-                        continue;
-                    if (isnan(pixelArray[nIdx]))
-                        continue;
-
-                    float neighElev = pixelArray[nIdx] + waterArray[nIdx];
-                    float diff = elev - neighElev;
-                    if (diff > 0.0f)
-                    {
-                        flows[d] = diff;
-                        totalFlow += diff;
-                    }
-                }
-
-                if (totalFlow > 0.0f)
-                {
-                    for (int d = 0; d < n; d++)
-                    {
-                        int nx = x + dx[d];
-                        int ny = y + dy[d];
-                        int nIdx = ny * nXSize + nx;
-
-                        float flowAmount = (flows[d] / totalFlow) * waterArray[idx];
-                        tempWaterArray[idx] -= flowAmount;
-                        tempWaterArray[nIdx] += flowAmount;
-                    }
-                }
-            }
-        }
-
-        // write back updated water depths
-        memcpy(waterArray, tempWaterArray, sizeof(float) * npix);
-    }
-
-    // allocate result (smoothed)
-    float *res = (float *)CPLMalloc(sizeof(float) * npix);
-    if (!res)
-    {
-        fprintf(stderr, "Failed to allocate result array\n");
-        CPLFree(tempWaterArray);
-        CPLFree(waterArray);
-        GDALClose(dem.dataset);
-        GDALClose(lahanData.dataset);
-        return 1;
-    }
-
-    // Call smoothing (check Smoothing signature in your header)
-    Smoothing(nYSize, nXSize, dx, dy, n, pixelArray, waterArray, res, noDataValue);
-    printf("Hasil akhir\n");
-
-    // cleanup
-    CPLFree(tempWaterArray);
-    CPLFree(waterArray);
-
-    // Write result (assumes WriteTiff takes dataset, buffer, xsize, ysize, outname)
-    WriteTiff(dem.dataset, res, nXSize, nYSize, output);
-
-    CPLFree(res);
-
-    // free landuse pixel array and close datasets (depends on OpenTiff ownership semantics)
-    CPLFree(lahanData.pixelArray);
+  int nXSize = dem.nXSize;
+  int nYSize = dem.nYSize;
+  if (nXSize <= 0 || nYSize <= 0) {
+    fprintf(stderr, "Failed: Invalid raster size\n");
     GDALClose(dem.dataset);
     GDALClose(lahanData.dataset);
+    return 1;
+  }
 
-    return 0;
+  int hasNoData = 0;
+  double noDataValue = GDALGetRasterNoDataValue(dem.band, &hasNoData);
+
+  // defaults (can be tuned)
+  float gsd = 0.5f;
+  float pixelArea = gsd * gsd;
+
+  // allocate pumps
+  Pump *pumps = (Pump *)calloc((size_t)nPumps, sizeof(Pump));
+  if (!pumps) {
+    fprintf(stderr, "Failed: to alloc pumps\n");
+    return 1;
+  }
+  for (int i = 0; i < nPumps; i++) {
+    int px = -1, py = -1, ox = -1, oy = -1;
+    LatLonToPixel(dem.dataset, inLat[i], inLon[i], &px, &py);
+    LatLonToPixel(dem.dataset, outLat[i], outLon[i], &ox, &oy);
+    // set all coords to -1 initially (safety)
+    pumps[i].px = -1;
+    pumps[i].py = -1;
+    pumps[i].ox = -1;
+    pumps[i].oy = -1;
+    if (px < 0 || px >= nXSize || py < 0 || py >= nYSize || ox < 0 ||
+        ox >= nXSize || oy < 0 || oy >= nYSize) {
+      fprintf(
+          stderr,
+          "Failed: Pump %d outside DEM bounds, ignored (in:%f,%f,out:%f,%f -> "
+          "px=%d,py=%d,ox=%d,oy=%d)\n",
+          i, inLat[i], inLon[i], outLat[i], outLon[i], px, py, ox, oy);
+      return 1;
+    }
+    pumps[i].inLat = inLat[i];
+    pumps[i].inLon = inLon[i];
+    pumps[i].outLat = outLat[i];
+    pumps[i].outLon = outLon[i];
+    pumps[i].px = px;
+    pumps[i].py = py;
+    pumps[i].ox = ox;
+    pumps[i].oy = oy;
+    pumps[i].capacity_m3hr = capacities[i];
+    pumps[i].threshold = thresholds[i];
+    pumps[i].radius_px = (int)ceil(radii[i] / gsd);
+    if (pumps[i].radius_px < 1)
+      pumps[i].radius_px = 1;
+    pumps[i].state = 0;
+    pumps[i].cooldown = 0;
+  }
+
+  size_t npix = (size_t)nXSize * (size_t)nYSize;
+  float *water = (float *)CPLCalloc(npix, sizeof(float));
+  float *tmp = (float *)CPLCalloc(npix, sizeof(float));
+  if (!water || !tmp) {
+    fprintf(stderr, "Failed: Memory allocation failed\n");
+    CPLFree(water);
+    CPLFree(tmp);
+    GDALClose(dem.dataset);
+    GDALClose(lahanData.dataset);
+    return 1;
+  }
+
+  FILE *pumpLog = fopen(pumpLogFile, "w");
+  if (!pumpLog) {
+    perror("Failed: to open pump_log.csv");
+    CPLFree(water);
+    CPLFree(tmp);
+    GDALClose(dem.dataset);
+    GDALClose(lahanData.dataset);
+    return 1;
+  }
+  fprintf(pumpLog, "step,subiter,pump_id,inLat,inLon,outLat,outLon,water_level_"
+                   "m,threshold_on_m,threshold_off_m,pumped_m,active\n");
+  fflush(pumpLog);
+
+  int dx[4] = {-1, 1, 0, 0};
+  int dy[4] = {0, 0, -1, 1};
+  int nDirs = 4;
+
+  const int pumpCooldownEpochs = 1;
+  const float pumpHysteresisFrac = 0.1f;
+
+  // MAIN loop over time-steps (time-series)
+  for (int step = 0; step < nSteps; step++) {
+    float rain_mm = rain_mm_array[step];
+    float interval_min = rain_interval_min_array[step];
+    int iter = (int)roundf(rain_iter_f_array[step]);
+    if (iter < 1)
+      iter = 1;
+
+    float rain_m = rain_mm / 1000.0f;
+    // distribute rain for this timestep: add to all valid pixels
+    for (size_t i = 0; i < npix; i++) {
+      if (hasNoData && elevArray[i] == (float)noDataValue)
+        continue;
+      if (isnan(elevArray[i]))
+        continue;
+      water[i] += rain_m;
+    }
+
+    // decay factor optionally (same as previous logic)
+    float t = (float)step / (float)((nSteps > 1) ? (nSteps - 1) : 1);
+    float decayFactor = fmaxf(0.1f, 1.0f - t * 0.9f);
+
+    // per-timestep sub-iterations
+    for (int it = 0; it < iter; it++) {
+      memcpy(tmp, water, sizeof(float) * npix);
+
+      // water flow + infiltration (4-directional)
+      for (int y = 1; y < nYSize - 1; y++) {
+        for (int x = 1; x < nXSize - 1; x++) {
+          int idx = y * nXSize + x;
+          if (hasNoData && elevArray[idx] == (float)noDataValue)
+            continue;
+          if (isnan(elevArray[idx]))
+            continue;
+
+          float z = elevArray[idx] + water[idx];
+          float total = 0.0f;
+          float pot[4] = {0, 0, 0, 0};
+
+          for (int d = 0; d < nDirs; d++) {
+            int nx = x + dx[d];
+            int ny = y + dy[d];
+            if (nx < 0 || ny < 0 || nx >= nXSize || ny >= nYSize)
+              continue;
+            int nidx = ny * nXSize + nx;
+            if (hasNoData && elevArray[nidx] == (float)noDataValue)
+              continue;
+            if (isnan(elevArray[nidx]))
+              continue;
+            float zn = elevArray[nidx] + water[nidx];
+            float diff = z - zn;
+            if (diff > 0.0f) {
+              pot[d] = diff;
+              total += diff;
+            }
+          }
+
+          if (total > 0.0f) {
+            for (int d = 0; d < nDirs; d++) {
+              if (pot[d] <= 0.0f)
+                continue;
+              int nx = x + dx[d];
+              int ny = y + dy[d];
+              int nidx = ny * nXSize + nx;
+              float flow = (pot[d] / total) * water[idx];
+              tmp[idx] -= flow;
+              tmp[nidx] += flow;
+            }
+          }
+
+          // infiltration
+          int kelas = lahan[idx];
+          if (kelas < 0 || kelas > 3)
+            kelas = 0;
+          float infil_mmhr = (kelas >= 0 && kelas < 4)
+                                 ? infil_capacity_mm_per_hr[kelas] * decayFactor
+                                 : 0.0f;
+          float infil_m = infil_mmhr / 1000.0f;
+          tmp[idx] = fmaxf(0.0f, tmp[idx] - infil_m);
+        }
+      } // end flow
+
+      memcpy(water, tmp, sizeof(float) * npix);
+
+      // pumps loop
+      // compute dt_hours for pump volume on this sub-iter: (interval_min / 60)
+      // / iter
+      float timestep_hours = interval_min / 60.0f;
+      float dt_hours = timestep_hours / (float)iter;
+
+      for (int pid = 0; pid < nPumps; pid++) {
+        Pump *p = &pumps[pid];
+        if (p->px < 0 || p->py < 0 || p->ox < 0 || p->oy < 0)
+          continue; // invalid pump
+
+        int pidx = p->py * nXSize + p->px;
+        int oidx = p->oy * nXSize + p->ox;
+        if (pidx < 0 || pidx >= (int)npix)
+          continue;
+        if (oidx < 0 || oidx >= (int)npix)
+          continue;
+
+        float thresh_on = p->threshold;
+        float thresh_off = p->threshold * (1.0f - pumpHysteresisFrac);
+        if (thresh_off < 0.0f)
+          thresh_off = 0.0f;
+
+        if (p->cooldown > 0)
+          p->cooldown--;
+        if (!p->state) {
+          if (water[pidx] > thresh_on && p->cooldown == 0) {
+            p->state = 1;
+            p->cooldown = pumpCooldownEpochs * iter;
+          }
+        } else {
+          if (water[pidx] < thresh_off && p->cooldown == 0) {
+            p->state = 0;
+            p->cooldown = pumpCooldownEpochs * iter;
+          }
+        }
+
+        float pumped_this_iter = 0.0f;
+
+        if (p->state) {
+          int countPix = 0;
+          // count valid pixels inside radius
+          for (int dyR = -p->radius_px; dyR <= p->radius_px; dyR++) {
+            for (int dxR = -p->radius_px; dxR <= p->radius_px; dxR++) {
+              int nx = p->px + dxR;
+              int ny = p->py + dyR;
+              if (nx < 0 || ny < 0 || nx >= nXSize || ny >= nYSize)
+                continue;
+              if (dxR * dxR + dyR * dyR > p->radius_px * p->radius_px)
+                continue;
+              countPix++;
+            }
+          }
+
+          if (countPix > 0) {
+            float pumpVolIter = p->capacity_m3hr * dt_hours;
+            float pumped_depth_m = pumpVolIter / (pixelArea * (float)countPix);
+
+            for (int dyR = -p->radius_px; dyR <= p->radius_px; dyR++) {
+              for (int dxR = -p->radius_px; dxR <= p->radius_px; dxR++) {
+                int nx = p->px + dxR;
+                int ny = p->py + dyR;
+                if (nx < 0 || ny < 0 || nx >= nXSize || ny >= nYSize)
+                  continue;
+                if (dxR * dxR + dyR * dyR > p->radius_px * p->radius_px)
+                  continue;
+                int nidx = ny * nXSize + nx;
+                if (nidx < 0 || nidx >= (int)npix)
+                  continue;
+                float remove = fminf(water[nidx], pumped_depth_m);
+                water[nidx] -= remove;
+                if (oidx >= 0 && oidx < (int)npix)
+                  water[oidx] += remove;
+                pumped_this_iter += remove;
+              }
+            }
+          }
+        } // end if state
+
+        fprintf(pumpLog,
+                "%d,%d,%d,%.6f,%.6f,%.6f,%.6f,%.6f,%.3f,%.3f,%.6f,%d\n", step,
+                it, pid, p->inLat, p->inLon, p->outLat, p->outLon, water[pidx],
+                thresh_on, thresh_off, pumped_this_iter, p->state);
+      } // end pump loop
+
+      fflush(pumpLog);
+    } // end iter
+  } // end steps
+
+  // smoothing & write
+  float *res = (float *)CPLMalloc(sizeof(float) * npix);
+  if (!res) {
+    fprintf(stderr, "Failed: alloc res\n");
+  } else {
+    Smoothing(nYSize, nXSize, dx, dy, nDirs, elevArray, water, res,
+              noDataValue);
+    WriteTiff(dem.dataset, res, nXSize, nYSize, (char *)output);
+    CPLFree(res);
+  }
+
+  // cleanup
+  CPLFree(tmp);
+  CPLFree(water);
+  CPLFree(lahanData.pixelArray);
+  GDALClose(dem.dataset);
+  GDALClose(lahanData.dataset);
+
+  fclose(pumpLog);
+  free(inLat);
+  free(inLon);
+  free(outLat);
+  free(outLon);
+  free(capacities);
+  free(thresholds);
+  free(radii);
+  free(pumps);
+  free(rain_mm_array);
+  free(rain_interval_min_array);
+  free(rain_iter_f_array);
+
+  return 0;
 }

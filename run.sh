@@ -1,50 +1,81 @@
 #!/bin/bash
 
-# Configuration
-API_URL="https://api.open-meteo.com/v1/forecast?latitude=-6.7609312&longitude=108.4201503&current=relative_humidity_2m,temperature_2m,wind_speed_10m,wind_direction_10m,rain,,weather_code&timezone=Asia%2FBangkok"   # Replace with your API
-COOLDOWN_SECONDS=$((60 * 60))   # 1 hour
-INTERVAL_SECONDS=$((5 * 60))    # 5 minutes
-PROGRAM_TO_RUN="./main"    # Replace with your program path
-
-# Check if jq is installed
-if ! command -v jq &> /dev/null; then
-    echo "Error: 'jq' is required but not installed. Install it using 'sudo apt install jq'."
+# Mengecek jumlah argumen minimal (16 argumen tanpa pumpradius)
+# Contoh: ./run.sh data/dem.tif data/lahan.tif result/result.tif result/pump_log.csv result/tiles 0,2.5,0,5.0 15,15,15,15 5,5,5,5 -7.5200680748355 112.70477092805535 -7.520508553989 112.70464135101226 4000 0.5 5
+if [ "$#" -lt 14 ]; then
+    echo "Usage: $0 <dem.tif> <landuse.tif> <output.tif> <output_pump_log.csv> <output_tiles> "
+    echo "       <rain_mm1,mm2,...> <interval_min1,interval_min2,...> "
+    echo "       <iter1,iter2,...> <pumpInLat,...> <pumpInLon,...> "
+    echo "       <pumpOutLat,...> <pumpOutLon,...> <pumpCapacity_m3_per_hr,...> "
+    echo "       <pumpThreshold_m,...> [<pumpRadius_m,...>]"
     exit 1
 fi
 
-# Main loop
-while true; do
-    echo "$(date): Checking value from API..."
+# Positional arguments
+DEM="$1"
+LANDUSE="$2"
+OUTPUT_TIF="$3"
+OUTPUT_PUMP="$4"
+OUTPUT_TILES="$5"
+RAIN_MM="$6"
+INTERVAL_MIN="$7"
+ITER="$8"
+PUMP_IN_LAT="$9"
+PUMP_IN_LON="${10}"
+PUMP_OUT_LAT="${11}"
+PUMP_OUT_LON="${12}"
+PUMP_CAPACITY="${13}"
+PUMP_THRESHOLD="${14}"
+PUMP_RADIUS="${15}"   # opsional, bisa kosong
 
-    # Get JSON from API
-    RESPONSE=$(curl -s "$API_URL")
+echo "DEM: $DEM"
+echo "LANDUSE: $LANDUSE"
+echo "OUTPUT_TIF: $OUTPUT_TIF"
+echo "OUTPUT_PUMP: $OUTPUT_PUMP"
+echo "OUTPUT_TILES: $OUTPUT_TILES"
+echo "RAIN_MM: $RAIN_MM"
+echo "INTERVAL_MIN: $INTERVAL_MIN"
+echo "ITER: $ITER"
+echo "PUMP_IN_LAT: $PUMP_IN_LAT"
+echo "PUMP_IN_LON: $PUMP_IN_LON"
+echo "PUMP_OUT_LAT: $PUMP_OUT_LAT"
+echo "PUMP_OUT_LON: $PUMP_OUT_LON"
+echo "PUMP_CAPACITY: $PUMP_CAPACITY"
+echo "PUMP_THRESHOLD: $PUMP_THRESHOLD"
+echo "PUMP_RADIUS: $PUMP_RADIUS"
 
-    # Extract 'value' using jq
-    VALUE=$(echo "$RESPONSE" | jq -r '.current.rain')
+shift 15  # sisa argumen kalau ada tambahan nanti
 
-    # Check if VALUE is numeric
-    if [[ "$VALUE" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
-        echo "Retrieved value: $VALUE"
+PROGRAM_TO_RUN="./main"
 
-        if (( $(echo "$VALUE >= 50" | bc -l) )); then
-            echo "Mulai simulasi dengan curah hujan $VALUE mm"
-            cp asli.tif data/asli.tif
-            $PROGRAM_TO_RUN data/dem.tif data/lahan.tif result/result.tif  $VALUE 0 0 0 0 0 0
-            echo "Simulasi selesai"
-            echo "Mulai Tiling"
-            gdal_translate -of VRT -ot Byte -scale 0 3 "result/result.tif" result/result.vrt
-            gdaldem color-relief result/result.vrt colormap/jet.clr result/output.tif -alpha
-            rm -rf result/tiles
-            gdal2tiles.py -z 12-17 --resampling=bilinear --tile-format=PNG result/output.tif result/tiles
-            echo "Selesai"
-            sleep "$COOLDOWN_SECONDS"
-        else
-            # echo "Value is below threshold. Will check again in $((INTERVAL_SECONDS / 60)) minutes."
-            echo "Cek lagi"
-            sleep "$INTERVAL_SECONDS"
-        fi
-    else
-        echo "Invalid or missing value in API response: $VALUE"
-        sleep "$INTERVAL_SECONDS"
-    fi
-done
+echo "Mulai simulasi dengan curah hujan $RAIN_MM mm"
+
+# Mempersiapkan argumen pumpradius hanya jika diisi
+if [ -z "$PUMP_RADIUS" ]; then
+    $PROGRAM_TO_RUN "$DEM" "$LANDUSE" "$OUTPUT_TIF" "$OUTPUT_PUMP" \
+        "$RAIN_MM" "$INTERVAL_MIN" "$ITER" "$PUMP_IN_LAT" "$PUMP_IN_LON" \
+        "$PUMP_OUT_LAT" "$PUMP_OUT_LON" "$PUMP_CAPACITY" "$PUMP_THRESHOLD"
+else
+    $PROGRAM_TO_RUN "$DEM" "$LANDUSE" "$OUTPUT_TIF" "$OUTPUT_PUMP" \
+        "$RAIN_MM" "$INTERVAL_MIN" "$ITER" "$PUMP_IN_LAT" "$PUMP_IN_LON" \
+        "$PUMP_OUT_LAT" "$PUMP_OUT_LON" "$PUMP_CAPACITY" "$PUMP_THRESHOLD" "$PUMP_RADIUS"
+fi
+
+# Cek exit status
+if [ $? -ne 0 ]; then
+    exit 1
+fi
+
+echo "Simulasi selesai"
+echo "Mulai Tiling"
+
+gdal_translate -of VRT -ot Byte -scale 0 3 "$OUTPUT_TIF" result/result.vrt
+gdaldem color-relief result/result.vrt colormap/jet.clr result/output.tif -alpha
+
+rm -rf "$OUTPUT_TILES"
+gdal2tiles.py -z 12-17 --resampling=bilinear --xyz result/output.tif "$OUTPUT_TILES"
+
+rm -rf result/output.tif
+rm -rf result/result.vrt
+
+echo "Selesai"
