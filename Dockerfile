@@ -1,6 +1,8 @@
 # Stage 1: build main + install dependencies
 FROM ghcr.io/osgeo/gdal:ubuntu-small-latest AS builder
 
+ARG NODE_ENV
+
 # Install Node 20 + dos2unix
 RUN apt-get update && apt-get install -y curl dos2unix build-essential time \
  && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
@@ -8,6 +10,9 @@ RUN apt-get update && apt-get install -y curl dos2unix build-essential time \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+
+ENV NODE_ENV=${NODE_ENV}
+
 COPY package.json package-lock.json* ./  
 RUN npm install --production
 

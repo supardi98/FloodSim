@@ -151,11 +151,11 @@ app.post("/simulate", (req, res) => {
             status: "success",
             message: "Simulation completed successfully",
             data: {
-                tiles: `${protocol}://${req.get("host")}/${tiles_dir}/{z}/{x}/{y}.png`,
-                leaflet: `${protocol}://${req.get("host")}/${tiles_dir}/leaflet.html`,
-                openlayers: `${protocol}://${req.get("host")}/${tiles_dir}/openlayers.html`,
-                output_tif: `${protocol}://${req.get("host")}/${output_tif}`,
-                output_pump: `${protocol}://${req.get("host")}/${pump_log}`,
+                tiles: `${protocol}${req.get("host")}/${tiles_dir}/{z}/{x}/{y}.png`,
+                leaflet: `${protocol}${req.get("host")}/${tiles_dir}/leaflet.html`,
+                openlayers: `${protocol}${req.get("host")}/${tiles_dir}/openlayers.html`,
+                output_tif: `${protocol}${req.get("host")}/${output_tif}`,
+                output_pump: `${protocol}${req.get("host")}/${pump_log}`,
             }
         });
     });
