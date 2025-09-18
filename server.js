@@ -20,7 +20,8 @@ const corsOptions = {
     },
     credentials: true,
 };
-app.use(cors(corsOptions));
+// app.use(cors(corsOptions));
+app.use(cors()); // for now, allow all origins
 app.use(express.json());
 
 // Public folders
