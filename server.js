@@ -191,7 +191,7 @@ app.post("/simulate", (req, res) => {
           )}/${tiles_dir}/openlayers.html`,
           output_tif: `${protocol}${req.get("host")}/${output_tif}`,
           output_pump: `${protocol}${req.get("host")}/${pump_log}`,
-          maxHeight: stdout.split("\n").slice(-2),
+          maxHeight: `${protocol}${req.get("host")}/result/max.txt`,
         },
       });
     }

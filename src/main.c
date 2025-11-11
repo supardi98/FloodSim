@@ -472,6 +472,7 @@ int main(int argc, const char *argv[])
   } // end steps
   float min = 0;
   float max = 0;
+  FILE *logFile = fopen("max.txt", "w");
   for (int i = 0; i < npix; i++)
   {
     if (water[i] > max)
@@ -480,7 +481,7 @@ int main(int argc, const char *argv[])
     }
     /* code */
   }
-  printf("%f", max);
+  fprintf(logFile, "%f", max);
   // smoothing & write
   float *res = (float *)CPLMalloc(sizeof(float) * npix);
   if (!res)
