@@ -2,6 +2,7 @@ import express from "express";
 import { execFile } from "child_process";
 import path from "path";
 import cors from "cors";
+import fs from "fs";
 
 const app = express();
 
@@ -177,6 +178,10 @@ app.post("/simulate", (req, res) => {
         });
       }
 
+      // maxHeight open from tiles_dir/max.txt
+      // open file max.txt
+      const maxHeight = fs.readFileSync(`${tiles_dir}/max.txt`, "utf-8");
+
       // Success
       const protocol =
         process.env.NODE_ENV === "production" ? "https://" : "http://";
@@ -191,7 +196,7 @@ app.post("/simulate", (req, res) => {
           )}/${tiles_dir}/openlayers.html`,
           output_tif: `${protocol}${req.get("host")}/${output_tif}`,
           output_pump: `${protocol}${req.get("host")}/${pump_log}`,
-          maxHeight: `${protocol}${req.get("host")}/result/max.txt`,
+          maxHeight: Number(maxHeight),
         },
       });
     }

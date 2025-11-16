@@ -75,6 +75,8 @@ gdaldem color-relief result/result.vrt colormap/jet.clr result/output.tif -alpha
 rm -rf "$OUTPUT_TILES"
 gdal2tiles.py -z 12-17 --resampling=bilinear --xyz result/output.tif "$OUTPUT_TILES"
 
+cp max.txt "$OUTPUT_TILES/max.txt"
+
 rm -rf result/output.tif
 rm -rf result/result.vrt
 
